@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sunset Scout</title>
+  <style>
+    body {
+      font-family: Georgia, serif;
+      background: #2b1b3d;
+      color: #ffe8cc;
+      max-width: 32rem;
+      margin: 0 auto;
+      padding: 3rem 1.5rem;
+    }
+    h1 { font-size: 2.5rem; margin-bottom: 0.25rem; }
+    button {
+      font-size: 1rem;
+      padding: 0.75rem 1.25rem;
+      border: none;
+      border-radius: 6px;
+      background: #ff9a3c;
+      color: #2b1b3d;
+      cursor: pointer;
+    }
+    #output { margin-top: 1.5rem; line-height: 1.8; }
+    #countdown {
+      margin-top: 1.5rem;
+      padding-top: 1rem;
+      border-top: 1px solid #6b4f86;
+      line-height: 1.9;
+      font-variant-numeric: tabular-nums;
+    }
+    #compass {
+      margin-top: 1.5rem;
+      padding-top: 1rem;
+      border-top: 1px solid #6b4f86;
+      text-align: center;
+    }
+    #dial {
+      width: 180px;
+      height: 180px;
+      margin: 1.25rem auto 0.75rem;
+      border: 2px solid #6b4f86;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #arrow {
+      width: 100px;
+      height: 100px;
+      transition: transform 0.15s linear;
+    }
+    #readout { font-size: 1.1rem; min-height: 1.5em; }
+    #dial.aligned { border-color: #ff9a3c; }
+  </style>
+</head>
+<body>
+  <h1>Sunset Scout</h1>
+  <p>Find where the sun will set, and when to be ready.</p>
+
+  <button id="locate">Get my location</button>
+  <div id="output"></div>
+  <div id="countdown"></div>
+
+  <div id="compass">
+    <button id="enableCompass">Turn on compass</button>
+    <div id="dial">
+      <!-- Arrow points up. We rotate it with JavaScript. -->
+      <svg id="arrow" viewBox="0 0 100 100">
+        <polygon points="50,6 80,70 50,58 20,70" fill="#ff9a3c"/>
+      </svg>
+    </div>
+    <div id="readout">Compass is off.</div>
+  </div>
+
+  <!-- SunCalc: does the sun math for us -->
+  <script src="https://cdn.jsdelivr.net/npm/suncalc@1.9.0/suncalc.js"></script>
+
+  <script>
+    const button = document.getElementById("locate");
+    const output = document.getElementById("output");
+    const countdownBox = document.getElementById("countdown");
+    const compassButton = document.getElementById("enableCompass");
+    const dial = document.getElementById("dial");
+    const arrow = document.getElementById("arrow");
+    const readout = document.getElementById("readout");
+
+    let timerId = null;
+
+    // Compass state
+    let sunBearing = null;      // direction of the sunset, in degrees (0 = north)
+    let smoothHeading = null;   // direction the phone is facing, smoothed
+
+    // ---------- Helpers ----------
+
+    function formatTime(date) {
+      return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    }
+
+    function formatDuration(ms) {
+      const totalSeconds = Math.floor(ms / 1000);
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      const pad = (n) => String(n).padStart(2, "0");
+
+      if (hours > 0) return hours + "h " + pad(minutes) + "m " + pad(seconds) + "s";
+      return minutes + "m " + pad(seconds) + "s";
+    }
+
+    function compassName(degrees) {
+      const names = ["N","NNE","NE","ENE","E","ESE","SE","SSE",
+                     "S","SSW","SW","WSW","W","WNW","NW","NNW"];
+      return names[Math.round(degrees / 22.5) % 16];
+    }
+
+    // ---------- Countdown ----------
+
+    function updateCountdown(times) {
+      const now = new Date();
+      const untilGolden = times.goldenHour - now;
+      const untilSunset = times.sunset - now;
+      const untilDusk = times.dusk - now;
+
+      let goldenLine;
+      if (untilGolden > 0) {
+        goldenLine = "Golden hour starts in " + formatDuration(untilGolden);
+      } else if (untilSunset > 0) {
+        goldenLine = "Golden hour is happening now";
+      } else {
+        goldenLine = "Golden hour is over";
+      }
+
+      const sunsetLine = untilSunset > 0
+        ? "Sunset in " + formatDuration(untilSunset)
+        : "The sun has set";
+
+      const afterglowLine = untilDusk > 0
+        ? "Afterglow window ends in " + formatDuration(untilDusk)
+        : "Afterglow window is over";
+
+      countdownBox.innerHTML =
+        goldenLine + "<br>" + sunsetLine + "<br>" + afterglowLine;
+    }
+
+    function startCountdown(times) {
+      if (timerId !== null) clearInterval(timerId);
+      updateCountdown(times);
+      timerId = setInterval(function () {
+        updateCountdown(times);
+      }, 1000);
+    }
+
+    // ---------- Compass ----------
+
+    // Redraw the arrow based on where the sun is and where the phone points
+    function updateArrow() {
+      if (smoothHeading === null) return;
+
+      if (sunBearing === null) {
+        readout.textContent = "Tap \"Get my location\" first.";
+        return;
+      }
+
+      // Difference between sun direction and phone direction, as -180 to +180.
+      // Positive = sun is to your right. Negative = sun is to your left.
+      const diff = ((sunBearing - smoothHeading + 540) % 360) - 180;
+
+      // Rotating the arrow by "diff" makes it point at the sun.
+      arrow.style.transform = "rotate(" + diff + "deg)";
+
+      const amount = Math.abs(Math.round(diff));
+      if (amount <= 5) {
+        readout.textContent = "You're facing the sunset!";
+        dial.classList.add("aligned");
+      } else {
+        readout.textContent = "Turn " + (diff > 0 ? "right " : "left ") + amount + "°";
+        dial.classList.remove("aligned");
+      }
+    }
+
+    // Runs every time the phone reports its orientation
+    function handleOrientation(event) {
+      let heading;
+
+      if (typeof event.webkitCompassHeading === "number") {
+        // iPhone: gives compass heading directly
+        heading = event.webkitCompassHeading;
+      } else if (event.absolute && event.alpha !== null) {
+        // Android: alpha counts counter-clockwise, compass heading is clockwise
+        heading = (360 - event.alpha) % 360;
+      } else {
+        return; // no usable compass data in this event
+      }
+
+      // Smoothing: move 20% of the way toward each new reading so the arrow
+      // doesn't jitter. The "+ 540 % 360 - 180" trick handles wrapping
+      // around from 359° to 0° the short way.
+      if (smoothHeading === null) {
+        smoothHeading = heading;
+      } else {
+        const change = ((heading - smoothHeading + 540) % 360) - 180;
+        smoothHeading = (smoothHeading + change * 0.2 + 360) % 360;
+      }
+
+      updateArrow();
+    }
+
+    compassButton.addEventListener("click", async function () {
+      // iPhone only lets you read motion sensors after the user gives permission
+      if (typeof DeviceOrientationEvent !== "undefined" &&
+          typeof DeviceOrientationEvent.requestPermission === "function") {
+        try {
+          const answer = await DeviceOrientationEvent.requestPermission();
+          if (answer !== "granted") {
+            readout.textContent = "Motion access was denied. Reload the page and try again.";
+            return;
+          }
+        } catch (error) {
+          readout.textContent = "Couldn't ask for motion access: " + error.message;
+          return;
+        }
+        window.addEventListener("deviceorientation", handleOrientation);
+      } else {
+        // Android and others: the "absolute" event has true compass direction
+        window.addEventListener("deviceorientationabsolute", handleOrientation);
+        window.addEventListener("deviceorientation", handleOrientation);
+      }
+
+      compassButton.hidden = true;
+      readout.textContent = "Waiting for compass...";
+
+      // If nothing arrives, this device probably has no compass (most laptops)
+      setTimeout(function () {
+        if (smoothHeading === null) {
+          readout.textContent = "No compass data. This device may not have a compass sensor.";
+        }
+      }, 3000);
+    });
+
+    // ---------- Sunset info ----------
+
+    function showSunset(lat, lon) {
+      const now = new Date();
+      let times = SunCalc.getTimes(now, lat, lon);
+
+      let label = "Tonight";
+      if (times.sunset < now) {
+        const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+        times = SunCalc.getTimes(tomorrow, lat, lon);
+        label = "Tomorrow";
+      }
+
+      const sunPos = SunCalc.getPosition(times.sunset, lat, lon);
+      const bearing = (sunPos.azimuth * 180 / Math.PI + 180 + 360) % 360;
+
+      // Save it so the compass can use it
+      sunBearing = bearing;
+      updateArrow();
+
+      output.innerHTML =
+        "Latitude: " + lat.toFixed(4) + "<br>" +
+        "Longitude: " + lon.toFixed(4) + "<br><br>" +
+        "<strong>" + label + "</strong><br>" +
+        "Golden hour starts: " + formatTime(times.goldenHour) + "<br>" +
+        "Sunset: " + formatTime(times.sunset) + "<br>" +
+        "Sun sets toward: " + bearing.toFixed(0) + "° (" + compassName(bearing) + ")";
+
+      startCountdown(times);
+    }
+
+    button.addEventListener("click", function () {
+      if (!("geolocation" in navigator)) {
+        output.textContent = "This browser doesn't support location.";
+        return;
+      }
+
+      output.textContent = "Finding you...";
+
+      navigator.geolocation.getCurrentPosition(
+        function (position) {
+          showSunset(position.coords.latitude, position.coords.longitude);
+        },
+        function (error) {
+          output.textContent = "Couldn't get your location: " + error.message;
+        }
+      );
+    });
+  </script>
+</body>
+</html>
